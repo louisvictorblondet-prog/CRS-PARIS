@@ -1,0 +1,516 @@
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>CRS — Paris sous tension</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#101b2c;color:white;font-family:Arial,sans-serif;touch-action:none}
+#game{position:absolute;width:100%;height:100%;display:block;object-fit:fill}
+#top{position:absolute;top:env(safe-area-inset-top);left:8px;right:8px;display:flex;justify-content:space-between;align-items:center;z-index:4;pointer-events:none}
+#top strong{font-size:12px;text-shadow:0 2px 5px black}
+#top button{pointer-events:auto}
+button{background:#253b57dd;color:white;border:1px solid #9eb6cc;border-radius:12px;padding:9px;font-weight:bold}
+#controls{position:absolute;bottom:max(12px,env(safe-area-inset-bottom));left:max(12px,env(safe-area-inset-left));right:max(12px,env(safe-area-inset-right));display:flex;justify-content:space-between;align-items:end;z-index:5;pointer-events:none}
+#stick{width:110px;height:110px;border-radius:50%;background:#203e6099;border:3px solid #b3d5ebaa;position:relative;pointer-events:auto;touch-action:none}
+#nub{position:absolute;width:45px;height:45px;top:50%;left:50%;border-radius:50%;background:#5aa3c9;border:2px solid white;transform:translate(-50%,-50%);pointer-events:none}
+#actions{display:flex;gap:10px;pointer-events:auto}
+#actions button{width:78px;height:72px;font-size:12px;border-radius:18px}
+#attack{background:#a23c45cc}
+#gas{background:#567b63cc}
+#rotate{display:none}
+@media(orientation:portrait) and (max-width:700px){
+#game{height:67%;top:8%}
+#controls{bottom:8%}
+#rotate{display:block;position:absolute;top:76%;width:100%;text-align:center;font-size:13px;color:#d5e7f7}
+}
+@media(orientation:landscape) and (max-height:500px){
+#stick{width:88px;height:88px}
+#nub{width:36px;height:36px}
+#actions button{width:72px;height:65px}
+}
+</style>
+</head>
+<body>
+<canvas id="game" width="960" height="500"></canvas>
+<div id="top">
+<strong>🛡️ CRS — PARIS SOUS TENSION</strong>
+<div>
+<button id="records">🏆</button>
+<button id="restart">↻</button>
+</div>
+</div>
+<div id="controls">
+<div id="stick"><div id="nub"></div></div>
+<div id="actions">
+<button id="gas">☁ GAZ</button>
+<button id="attack">⚡ ATTAQUE</button>
+</div>
+</div>
+<div id="rotate">↻ Tourne ton iPhone à l'horizontale pour jouer en grand</div>
+<script>
+"use strict";
+const canvas=document.getElementById("game");
+const c=canvas.getContext("2d");
+const W=960,H=500,G=414;
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const cap=(x,a,b)=>Math.max(a,Math.min(b,x));
+const districts=["RÉPUBLIQUE","BASTILLE","CHÂTELET","CHAMPS-ÉLYSÉES","QUAIS DE SEINE"];
+const equipment=["POINGS","BOUCLIER","MATRAQUE","GAZ","BLINDÉ"];
+let p,enemies,allies,pickups,clouds,shots,particles,score,travel,frame,spawn,bonusTimer,gearLevel,nextUnlock,miniLevel,bossLevel,bossActive,gameOver,board,notice,noticeTimer,doubleTime,damageTime,gasCooldown,kills,records=[];
+let keys={left:false,right:false,jump:false};
+try{records=JSON.parse(localStorage.getItem("crs_paris_records_v05")||"[]")}catch(e){}
+if(!Array.isArray(records))records=[];
+function rect(x,y,w,h,color,r=0){
+c.fillStyle=color;
+c.beginPath();
+if(r)c.roundRect(x,y,w,h,r);
+else c.rect(x,y,w,h);
+c.fill();
+}
+function ellipse(x,y,rx,ry,color){
+c.fillStyle=color;c.beginPath();c.ellipse(x,y,rx,ry,0,0,Math.PI*2);c.fill();
+}
+function line(x1,y1,x2,y2,color,width=2){
+c.strokeStyle=color;c.lineWidth=width;c.lineCap="round";
+c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);c.stroke();
+}
+function text(t,x,y,size=15,color="#fff",align="left"){
+c.fillStyle=color;c.font=`bold ${size}px Arial`;c.textAlign=align;c.fillText(t,x,y);c.textAlign="left";
+}
+function message(t){notice=t;noticeTimer=120}
+function reset(){
+p={x:150,y:G-64,w:32,h:64,vx:0,vy:0,face:1,hp:100,cd:0,inv:0,anim:0,vehicle:0};
+enemies=[];allies=[];pickups=[];clouds=[];shots=[];particles=[];
+score=0;travel=0;frame=0;spawn=70;bonusTimer=320;gearLevel=0;nextUnlock=500;
+miniLevel=0;bossLevel=0;bossActive=false;gameOver=false;board=false;
+notice="AVANCE ET SURVIS !";noticeTimer=150;
+doubleTime=0;damageTime=0;gasCooldown=0;kills=0;
+keys={left:false,right:false,jump:false};
+}
+function burst(x,y,color,n=12){
+for(let i=0;i<n;i++)particles.push({x,y,vx:rnd(-5,5),vy:rnd(-7,1),life:rnd(12,27),color,size:rnd(2,5)});
+}
+function award(n){
+score+=Math.round(n*(doubleTime>0?2:1));
+while(score>=nextUnlock){
+let level=nextUnlock/500;
+if(level<=4){
+pickups.push({x:Math.min(850,p.x+230),y:G-38,type:"gear",level,bob:0});
+message("NOUVEL ÉQUIPEMENT DISPONIBLE !");
+}else{
+let type=allies.length%3===2?"tireur":"matraque";
+allies.push({x:p.x-60,y:G-64,type,cd:0,anim:0,face:1});
+message("RENFORT CRS : "+(type==="tireur"?"TIREUR":"MATRAQUE"));
+burst(p.x-40,G-55,"#a2e6ff",20);
+}
+nextUnlock+=500;
+}
+}
+function bonus(x){
+let types=["heal","damage","double"];
+pickups.push({x,y:G-38,type:types[Math.floor(Math.random()*3)],bob:0});
+}
+function damageEnemy(e,n,source){
+if(e.dead||e.inv>0)return;
+e.hp-=n;e.inv=8;e.flash=7;e.stun=9;
+burst(e.x+e.w/2,e.y+20,"#ffcf84",9);
+if(e.hp<=0){
+e.dead=true;kills++;
+burst(e.x+e.w/2,e.y+25,"#a9cde6",20);
+award(e.type==="major"?800:e.type==="mini"?350:e.type==="heavy"?120:85);
+if(Math.random()<.24)bonus(e.x);
+if(e.type==="major"){bossActive=false;message("BOSS VAINCU !")}
+}
+}
+function attack(){
+if(gameOver||board||p.cd>0)return;
+p.anim=15;
+let power=[1,2,3,3,5][gearLevel]*(damageTime>0?2:1);
+let range=p.vehicle>0?225:[56,70,86,86,100][gearLevel];
+p.cd=p.vehicle>0?22:19;
+for(const e of enemies){
+let d=e.x-p.x;
+if(d*p.face>-25&&d*p.face<range&&Math.abs(e.y-p.y)<85)
+damageEnemy(e,power,p.x);
+}
+burst(p.x+p.face*42,p.y+29,"#d6e8f5",9);
+}
+function gas(){
+if(gameOver||board||gearLevel<3||gasCooldown>0)return;
+gasCooldown=220;
+clouds.push({x:p.x+p.face*100,y:G-52,r:20,life:150});
+message("GAZ LACRYMOGÈNE !");
+}
+function spawnEnemy(type){
+if(!type){
+let r=Math.random();
+type=r<.18?"thrower":r<.46?"heavy":"runner";
+}
+let major=type==="major",mini=type==="mini";
+let w=major?76:mini?55:34;
+let h=major?108:mini?84:60;
+let base=1+Math.floor(score/1600);
+let hp=major?base*23+38:mini?base*11+17:type==="heavy"?base+4:base+1;
+enemies.push({x:W+30,y:G-h,w,h,type,hp,maxHp:hp,inv:0,stun:0,flash:0,cd:0,shot:80,dead:false});
+}
+function finish(){
+if(gameOver)return;
+gameOver=true;
+records.push({score,meters:Math.floor(travel/10),kills,date:new Date().toLocaleDateString("fr-FR")});
+records.sort((a,b)=>b.score-a.score);
+records=records.slice(0,10);
+try{localStorage.setItem("crs_paris_records_v05",JSON.stringify(records))}catch(e){}
+}
+function update(){
+if(gameOver||board)return;
+frame++;
+p.cd=Math.max(0,p.cd-1);p.inv=Math.max(0,p.inv-1);
+p.anim=Math.max(0,p.anim-1);p.vehicle=Math.max(0,p.vehicle-1);
+doubleTime=Math.max(0,doubleTime-1);
+damageTime=Math.max(0,damageTime-1);
+gasCooldown=Math.max(0,gasCooldown-1);
+noticeTimer=Math.max(0,noticeTimer-1);
+let dx=(keys.right?1:0)-(keys.left?1:0);
+p.vx=dx*(p.vehicle>0?3.5:4.5);
+if(dx)p.face=dx;
+p.x=cap(p.x+p.vx,22,760);
+if(keys.jump&&p.y>=G-p.h-1)p.vy=-12.5;
+p.vy+=.65;
+p.y=Math.min(G-p.h,p.y+p.vy);
+if(p.y>=G-p.h)p.vy=0;
+if(p.x>460){
+let shift=p.x-460;p.x=460;travel+=shift;
+for(const group of [enemies,allies,pickups,clouds,shots,particles])
+for(const o of group)o.x-=shift;
+}
+if(dx>0)travel+=.3;
+if(frame%10===0&&dx>0)award(5);
+let majorTarget=Math.floor(score/6000);
+if(majorTarget>bossLevel){
+bossLevel=majorTarget;bossActive=true;
+enemies=[];shots=[];spawnEnemy("major");
+message("⚠ BOSS PRINCIPAL !");
+}else if(!bossActive){
+let miniTarget=Math.floor(score/2500);
+if(miniTarget>miniLevel){
+miniLevel=miniTarget;
+spawnEnemy("mini");
+message("⚠ MINI-BOSS !");
+}
+}
+if(!bossActive){
+spawn--;
+if(spawn<=0){
+spawnEnemy();
+spawn=Math.max(30,100-score/130)+rnd(0,30);
+}
+}
+bonusTimer--;
+if(bonusTimer<=0){
+bonus(Math.min(850,p.x+rnd(160,320)));
+bonusTimer=rnd(240,400);
+}
+for(const e of enemies){
+if(e.dead)continue;
+e.inv=Math.max(0,e.inv-1);
+e.flash=Math.max(0,e.flash-1);
+e.cd=Math.max(0,e.cd-1);
+if(e.stun>0){e.stun--;continue}
+let d=p.x-e.x;
+let speed=e.type==="major"?1.3:e.type==="mini"?1.8:e.type==="heavy"?1.25:2.3;
+if(e.type==="thrower"&&Math.abs(d)<340){
+e.shot--;
+if(e.shot<=0){
+shots.push({x:e.x,y:e.y+25,vx:Math.sign(d)*5.2,life:110,friendly:false,damage:7});
+e.shot=100;
+}
+}else e.x+=Math.sign(d)*Math.min(speed+score/12000,4);
+if(Math.abs(d)<e.w*.7+16&&Math.abs(e.y-p.y)<95&&e.cd===0&&p.inv===0){
+p.hp-=e.type==="major"?24:e.type==="mini"?17:10;
+p.inv=45;e.cd=65;
+burst(p.x+15,p.y+26,"#ff8e83",12);
+}
+}
+for(const a of allies){
+a.cd=Math.max(0,a.cd-1);a.anim=Math.max(0,a.anim-1);
+let nearest=null,dist=Infinity;
+for(const e of enemies){
+let d=Math.abs(e.x-a.x);
+if(!e.dead&&d<dist){dist=d;nearest=e}
+}
+let target=p.x-65-allies.indexOf(a)*30;
+if(nearest&&dist<(a.type==="tireur"?310:115))target=nearest.x-(a.type==="tireur"?135:42);
+a.x+=(target-a.x)*.075;
+a.face=nearest&&nearest.x<a.x?-1:1;
+a.y=G-64;
+if(nearest&&a.cd===0){
+if(a.type==="tireur"&&dist<330){
+shots.push({x:a.x+18,y:a.y+28,vx:a.face*9,life:55,friendly:true,damage:2});
+a.cd=60;a.anim=15;
+}else if(a.type==="matraque"&&dist<105){
+damageEnemy(nearest,2,a.x);
+a.cd=42;a.anim=13;
+}
+}
+}
+for(const s of shots){
+s.x+=s.vx;s.life--;
+if(s.friendly){
+for(const e of enemies){
+if(!e.dead&&Math.abs(s.x-e.x-e.w/2)<e.w/2+8&&Math.abs(s.y-e.y-30)<50){
+damageEnemy(e,s.damage,s.x);s.life=0;break;
+}
+}
+}else if(Math.abs(s.x-p.x-15)<23&&Math.abs(s.y-p.y-30)<40){
+s.life=0;
+if(p.inv===0){p.hp-=s.damage;p.inv=35}
+}
+}
+shots=shots.filter(s=>s.life>0&&s.x>-50&&s.x<1020);
+for(const cloud of clouds){
+cloud.life--;cloud.r=Math.min(115,cloud.r+1.7);
+if(frame%18===0){
+for(const e of enemies)
+if(!e.dead&&Math.abs(e.x-cloud.x)<cloud.r)
+damageEnemy(e,damageTime>0?4:2,cloud.x);
+}
+}
+clouds=clouds.filter(s=>s.life>0);
+for(const item of pickups){
+item.bob+=.08;
+if(Math.abs(item.x-p.x)<45&&Math.abs(item.y-p.y)<90){
+item.taken=true;burst(item.x,item.y,"#9ef6d4",20);
+if(item.type==="gear"){
+gearLevel=Math.max(gearLevel,item.level);
+if(item.level===3)message("GAZ DÉBLOQUÉ : BOUTON ☁");
+else if(item.level===4){p.vehicle=600;message("BLINDÉ : 10 SECONDES !")}
+else message("ÉQUIPEMENT : "+equipment[item.level]);
+}else if(item.type==="heal"){
+p.hp=Math.min(100,p.hp+30);message("SOIN +30");
+}else if(item.type==="double"){
+doubleTime=600;message("SCORE x2 ACTIVÉ");
+}else if(item.type==="damage"){
+damageTime=600;message("DÉGÂTS x2 ACTIVÉS");
+}
+}
+}
+pickups=pickups.filter(s=>!s.taken&&s.x>-80);
+enemies=enemies.filter(e=>!e.dead&&e.x>-100);
+for(const q of particles){
+q.x+=q.vx;q.y+=q.vy;q.vy+=.25;q.life--;
+}
+particles=particles.filter(q=>q.life>0);
+if(p.hp<=0)finish();
+}
+function building(x,w,roof,i){
+let colors=["#bcb1a5","#c8b4a6","#b4bbc1","#d5c2b0"];
+rect(x,roof,w,G-roof,colors[i%4]);
+rect(x-5,roof-9,w+10,12,"#73777d");
+rect(x+12,roof-28,w-24,22,"#686c73",3);
+for(let y=roof+26;y<G-100;y+=70){
+for(let xx=x+22;xx<x+w-35;xx+=65){
+rect(xx-5,y-5,46,57,"#e7dfd3",3);
+rect(xx,y,36,44,"#48677c",3);
+rect(xx+3,y+3,30,37,"#a7c8d7",2);
+line(xx+18,y+3,xx+18,y+40,"#5b7281",3);
+line(xx+3,y+22,xx+33,y+22,"#5b7281",3);
+rect(xx-7,y+46,49,7,"#73777a");
+}
+}
+rect(x+8,G-87,w-16,87,"#58626b");
+rect(x+15,G-70,54,60,"#9ab9c5",3);
+rect(x+83,G-70,54,60,"#9ab9c5",3);
+rect(x+6,G-94,w-12,13,"#9a6e54");
+text(i%2?"CAFÉ DE PARIS":"BOULANGERIE",x+16,G-82,11,"#fff2d8");
+}
+function background(){
+let district=Math.floor(score/1000)%5;
+let night=Math.floor(score/5000)%2===1;
+let sky=c.createLinearGradient(0,0,0,G);
+sky.addColorStop(0,night?"#172b4b":"#7aa8cc");
+sky.addColorStop(1,night?"#748298":"#e0d8c9");
+rect(0,0,W,H,sky);
+ellipse(800,75,31,31,night?"#e7e5ce":"#f6df9d");
+let off=(travel*.22)%330;
+for(let i=-1;i<5;i++)building(i*330-off,310,105+(i+4)%3*16,i+8);
+rect(0,G,W,13,"#a9a9a6");
+rect(0,G+13,W,H-G-13,"#444c58");
+for(let x=-(travel%130);x<W;x+=130)rect(x,474,65,5,"#e2d7aa",2);
+for(let x=90-(travel*.3%350);x<W;x+=350){
+rect(x,G-110,7,110,"#414b54",3);
+ellipse(x+3,G-113,15,12,night?"#ffdf95":"#9eabb3");
+}
+text(districts[district],16,397,14,"#233e53");
+}
+function human(x,y,face,police,weapon,anim=0,scale=1,flash=0){
+c.save();c.translate(x+16,y);c.scale(face*scale,scale);
+let dark=police?"#172c45":"#333840";
+let cloth=police?"#28476a":"#63565a";
+let skin="#cba48a";
+let stride=anim>0?5*Math.sin(frame*.4):3*Math.sin(frame*.14);
+ellipse(0,61,18,5,"#0003");
+line(-7,42,-9+stride,59,dark,11);
+line(8,42,9-stride,59,dark,11);
+rect(-16,55+stride,13,7,"#1c242d",3);
+rect(3,55-stride,14,7,"#1c242d",3);
+rect(-15,19,30,27,flash?"#fff0a0":cloth,7);
+rect(-12,23,24,8,police?"#385c80":"#75656b",3);
+rect(-12,32,24,4,police?"#d1dde4":"#4d3e45",2);
+ellipse(0,13,13,16,skin);
+if(police){
+ellipse(0,8,17,12,"#17283c");
+rect(-14,10,28,13,"#8bb5c9aa",5);
+line(-13,23,13,23,"#a9c5d2",2);
+text("CRS",-12,42,10,"#eef4fa");
+}else{
+ellipse(0,4,16,10,"#282e36");
+rect(-11,12,22,6,"#665b57",2);
+}
+line(-14,25,-19,40,cloth,9);
+line(14,25,19,39,cloth,9);
+ellipse(-19,40,5,6,police?"#192b3e":skin);
+ellipse(19,39,5,6,police?"#192b3e":skin);
+if(police&&weapon==="shield"){
+rect(17,17,24,43,"#a9cad9bb",7);
+line(20,22,20,55,"#e6f3f7",2);
+}
+if(police&&weapon==="baton"){
+line(18,anim>0?9:27,36,anim>0?-12:14,"#161e29",7);
+}
+if(police&&weapon==="gun"){
+rect(18,28,27,7,"#28333d",2);
+rect(20,34,6,9,"#28333d",2);
+}
+c.restore();
+}
+function vehicle(x,y){
+rect(x-28,y+19,116,44,"#536b70",9);
+rect(x-4,y,70,29,"#657d80",8);
+rect(x+61,y+17,31,11,"#364b52",3);
+rect(x+5,y+7,25,13,"#a6c3cf",3);
+rect(x+38,y+7,21,13,"#a6c3cf",3);
+for(let i=0;i<4;i++){
+ellipse(x-10+i*27,y+62,12,12,"#222e37");
+ellipse(x-10+i*27,y+62,5,5,"#87999e");
+}
+text("CRS",x+20,y+48,17);
+}
+function enemyDraw(e){
+let scale=e.h/60;
+human(e.x,e.y,1,false,"",e.stun,scale,e.flash>0);
+rect(e.x,e.y-15,e.w,6,"#17202b",3);
+rect(e.x,e.y-15,e.w*cap(e.hp/e.maxHp,0,1),6,e.type==="major"?"#f078a1":"#f4b767",3);
+if(e.type==="major")text("BOSS",e.x+e.w/2,e.y-24,16,"#fff0cf","center");
+if(e.type==="mini")text("MINI-BOSS",e.x+e.w/2,e.y-23,13,"#fff0cf","center");
+}
+function draw(){
+background();
+for(const item of pickups){
+let y=item.y+Math.sin(item.bob)*6;
+ellipse(item.x,y,23,23,item.type==="gear"?"#e7bf65":"#79cba7");
+ellipse(item.x,y,18,18,"#273f53");
+let symbol=item.type==="gear"?["","▣","╱","☁","▰"][item.level]:{heal:"+",double:"×2",damage:"⚔"}[item.type];
+text(symbol,item.x,y+8,24,"#fff2c5","center");
+}
+for(const cloud of clouds){
+for(let i=0;i<8;i++){
+let a=i*Math.PI/4+frame*.008;
+ellipse(cloud.x+Math.cos(a)*cloud.r*.4,cloud.y+Math.sin(a)*cloud.r*.35,cloud.r*.46,cloud.r*.3,"#d6e7b44a");
+}
+}
+for(const e of enemies)enemyDraw(e);
+for(const a of allies)human(a.x,a.y,a.face,true,a.type==="tireur"?"gun":"baton",a.anim,1);
+if(p.vehicle>0)vehicle(p.x,G-76);
+else human(p.x,p.y,p.face,true,gearLevel===1?"shield":gearLevel>=2?"baton":"",p.anim,1);
+for(const s of shots){
+ellipse(s.x,s.y,s.friendly?5:7,3,s.friendly?"#fff0ac":"#ff9b6c");
+}
+for(const q of particles)ellipse(q.x,q.y,q.size,q.size,q.color);
+rect(10,10,340,100,"#0b1a2bdc",10);
+text("SCORE "+score,22,34,20);
+text("VIE",22,60,14);
+rect(66,47,200,16,"#49576a",7);
+rect(66,47,200*cap(p.hp/100,0,1),16,p.hp>30?"#4ad6a2":"#f16d6d",7);
+text("CRS "+allies.length+"  |  KO "+kills,22,87,14);
+rect(604,10,346,76,"#0b1a2bdc",10);
+text("ÉQUIPEMENT : "+equipment[gearLevel],616,34,15);
+text("PROCHAIN PALIER : "+nextUnlock,616,58,13);
+if(gearLevel>=3)text("GAZ : "+(gasCooldown?"RECHARGE":"PRÊT"),616,77,12,"#c9f3cf");
+if(doubleTime>0)text("SCORE ×2",375,28,15,"#f7dd80");
+if(damageTime>0)text("DÉGÂTS ×2",375,49,15,"#f7dd80");
+if(noticeTimer>0){
+rect(200,111,560,40,"#0c2b40dd",10);
+text(notice,480,138,19,"#ffe29c","center");
+}
+let boss=enemies.find(e=>e.type==="major"&&!e.dead);
+if(boss){
+rect(270,166,420,29,"#182537dd",9);
+rect(277,174,406*cap(boss.hp/boss.maxHp,0,1),13,"#d85b7c",5);
+text("BOSS PRINCIPAL",480,160,16,"#fff","center");
+}
+if(gameOver||board){
+rect(0,0,W,H,"#06101eea");
+text(board?"🏆 TOP 10":"FIN DE PARTIE",480,76,33,"#fff","center");
+text("SCORE : "+score+"  |  KO : "+kills,480,119,19,"#d5e7f5","center");
+records.slice(0,10).forEach((r,i)=>{
+text((i+1)+".  "+r.score+" points  ·  "+r.kills+" KO",480,157+i*27,16,i===0?"#ffe08a":"#e4edf5","center");
+});
+text("Appuie sur ↻ pour rejouer",480,477,16,"#fff","center");
+}
+}
+function loop(){update();draw();requestAnimationFrame(loop)}
+reset();loop();
+document.addEventListener("keydown",e=>{
+let k=e.key.toLowerCase();
+if(["arrowleft","arrowright","arrowup"," "].includes(k))e.preventDefault();
+if(k==="arrowleft"||k==="a")keys.left=true;
+if(k==="arrowright"||k==="d")keys.right=true;
+if(k==="arrowup"||k==="w"||k===" ")keys.jump=true;
+if(k==="f"&&!e.repeat)attack();
+if(k==="g"&&!e.repeat)gas();
+if(k==="r")reset();
+});
+document.addEventListener("keyup",e=>{
+let k=e.key.toLowerCase();
+if(k==="arrowleft"||k==="a")keys.left=false;
+if(k==="arrowright"||k==="d")keys.right=false;
+if(k==="arrowup"||k==="w"||k===" ")keys.jump=false;
+});
+const stick=document.getElementById("stick");
+const nub=document.getElementById("nub");
+let activePointer=null;
+function moveStick(e){
+let b=stick.getBoundingClientRect();
+let mx=b.left+b.width/2,my=b.top+b.height/2;
+let max=b.width*.3;
+let dx=e.clientX-mx,dy=e.clientY-my;
+let len=Math.hypot(dx,dy);
+if(len>max){dx=dx/len*max;dy=dy/len*max}
+nub.style.transform=`translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px))`;
+keys.left=dx< -max*.25;
+keys.right=dx>max*.25;
+keys.jump=dy< -max*.35;
+}
+function stopStick(){
+activePointer=null;
+keys.left=false;keys.right=false;keys.jump=false;
+nub.style.transform="translate(-50%,-50%)";
+}
+stick.addEventListener("pointerdown",e=>{
+e.preventDefault();activePointer=e.pointerId;
+stick.setPointerCapture(e.pointerId);moveStick(e);
+});
+stick.addEventListener("pointermove",e=>{
+if(e.pointerId===activePointer)moveStick(e);
+});
+["pointerup","pointercancel","lostpointercapture"].forEach(ev=>stick.addEventListener(ev,stopStick));
+document.getElementById("attack").addEventListener("pointerdown",e=>{e.preventDefault();attack()});
+document.getElementById("gas").addEventListener("pointerdown",e=>{e.preventDefault();gas()});
+document.getElementById("restart").onclick=reset;
+document.getElementById("records").onclick=()=>{board=!board};
+</script>
+</body>
+</html>
